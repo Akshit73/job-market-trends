@@ -1,11 +1,40 @@
 
+import importlib
+import sqlite3
+
 import pandas as pd
 import pytest
 import requests
 
-from src.extract import extract_jobs
+extract_module = importlib.import_module("src.extract")
+pipeline = importlib.import_module("src.pipeline")
+
 from src.transform import transform_jobs
 from src.load import load_jobs
+
+
+# Common complete job record
+def make_job(job_id="101", **overrides):
+    job = {
+        "job_id": job_id,
+        "job_title": "Python Developer",
+        "company": "TechCorp",
+        "location": "Delhi",
+        "country": "IN",
+        "skills": "Python, SQL",
+        "skill_category": "Technology",
+        "experience": "Entry Level",
+        "job_type": "Full-time",
+        "category": "Technology",
+        "salary": None,
+        "description": "Python development role",
+        "posted_date": "2026-11-01",
+        "closing_date": None,
+        "job_url": f"https://example.com/job/{job_id}",
+        "source": "Dev Global Jobs",
+    }
+    job.update(overrides)
+    return job
 
 
 # -------------------------
@@ -40,11 +69,12 @@ def test_extract_maps_api_data(monkeypatch):
             }
 
     monkeypatch.setattr(
-        "src.extract.requests.get",
-        lambda *args, **kwargs: MockResponse()
+        extract_module.requests,
+        "get",
+        lambda *args, **kwargs: MockResponse(),
     )
 
-    result = extract_jobs()
+    result = extract_module.extract_jobs()
 
     assert len(result) == 1
     assert result.iloc[0]["job_id"] == "101"
@@ -72,20 +102,23 @@ def test_extract_handles_pagination(monkeypatch):
                 "country": "IN",
                 "url": "https://example.com/job",
             }
+
             return {
                 "jobs": [job],
-                "meta": {
-                    "hasMore": self.offset == 0
-                },
+                "meta": {"hasMore": self.offset == 0},
             }
 
     def mock_get(url, params, timeout):
         calls.append(params["offset"])
         return MockResponse(params["offset"])
 
-    monkeypatch.setattr("src.extract.requests.get", mock_get)
+    monkeypatch.setattr(
+        extract_module.requests,
+        "get",
+        mock_get,
+    )
 
-    result = extract_jobs()
+    result = extract_module.extract_jobs()
 
     assert calls == [0, 1]
     assert len(result) == 2
@@ -95,10 +128,14 @@ def test_extract_handles_api_failure(monkeypatch):
     def mock_get(*args, **kwargs):
         raise requests.RequestException("Connection failed")
 
-    monkeypatch.setattr("src.extract.requests.get", mock_get)
+    monkeypatch.setattr(
+        extract_module.requests,
+        "get",
+        mock_get,
+    )
 
     with pytest.raises(RuntimeError, match="Could not fetch"):
-        extract_jobs()
+        extract_module.extract_jobs()
 
 
 def test_extract_rejects_empty_response(monkeypatch):
@@ -113,12 +150,13 @@ def test_extract_rejects_empty_response(monkeypatch):
             }
 
     monkeypatch.setattr(
-        "src.extract.requests.get",
-        lambda *args, **kwargs: MockResponse()
+        extract_module.requests,
+        "get",
+        lambda *args, **kwargs: MockResponse(),
     )
 
     with pytest.raises(RuntimeError, match="no Indian job listings"):
-        extract_jobs()
+        extract_module.extract_jobs()
 
 
 # -------------------------
@@ -127,18 +165,8 @@ def test_extract_rejects_empty_response(monkeypatch):
 
 def test_transform_removes_duplicate_job_ids():
     data = pd.DataFrame([
-        {
-            "job_id": "101",
-            "job_title": "Python Developer",
-            "company": "TechCorp",
-            "location": "Delhi",
-        },
-        {
-            "job_id": "101",
-            "job_title": "Python Developer",
-            "company": "TechCorp",
-            "location": "Delhi",
-        },
+        make_job("101"),
+        make_job("101"),
     ])
 
     result = transform_jobs(data)
@@ -148,18 +176,8 @@ def test_transform_removes_duplicate_job_ids():
 
 def test_transform_removes_missing_job_titles():
     data = pd.DataFrame([
-        {
-            "job_id": "101",
-            "job_title": None,
-            "company": "TechCorp",
-            "location": "Delhi",
-        },
-        {
-            "job_id": "102",
-            "job_title": "Data Analyst",
-            "company": "DataWorks",
-            "location": "Delhi",
-        },
+        make_job("101", job_title=None),
+        make_job("102", job_title="Data Analyst"),
     ])
 
     result = transform_jobs(data)
@@ -170,13 +188,7 @@ def test_transform_removes_missing_job_titles():
 
 def test_transform_standardizes_location_and_country():
     data = pd.DataFrame([
-        {
-            "job_id": "101",
-            "job_title": "Python Developer",
-            "company": "TechCorp",
-            "location": "delhi",
-            "country": "in",
-        }
+        make_job("101", location="delhi", country="in"),
     ])
 
     result = transform_jobs(data)
@@ -192,18 +204,8 @@ def test_transform_standardizes_location_and_country():
 @pytest.fixture
 def sample_jobs():
     return pd.DataFrame([
-        {
-            "job_id": "101",
-            "job_title": "Python Developer",
-            "company": "TechCorp",
-            "location": "Delhi",
-        },
-        {
-            "job_id": "102",
-            "job_title": "Data Analyst",
-            "company": "DataWorks",
-            "location": "Mumbai",
-        },
+        make_job("101"),
+        make_job("102", job_title="Data Analyst"),
     ])
 
 
@@ -213,8 +215,6 @@ def test_load_inserts_jobs_into_database(
     monkeypatch.chdir(tmp_path)
 
     load_jobs(sample_jobs)
-
-    import sqlite3
 
     conn = sqlite3.connect("data/jobs.db")
 
@@ -232,16 +232,7 @@ def test_load_updates_existing_job_and_preserves_first_seen(
 ):
     monkeypatch.chdir(tmp_path)
 
-    import sqlite3
-
-    original = pd.DataFrame([
-        {
-            "job_id": "101",
-            "job_title": "Python Developer",
-            "company": "TechCorp",
-            "location": "Delhi",
-        }
-    ])
+    original = pd.DataFrame([make_job("101")])
 
     load_jobs(original)
 
@@ -254,12 +245,7 @@ def test_load_updates_existing_job_and_preserves_first_seen(
     conn.close()
 
     updated = pd.DataFrame([
-        {
-            "job_id": "101",
-            "job_title": "Senior Python Developer",
-            "company": "TechCorp",
-            "location": "Delhi",
-        }
+        make_job("101", job_title="Senior Python Developer")
     ])
 
     load_jobs(updated)
@@ -285,12 +271,7 @@ def test_load_rejects_invalid_job_ids(
     monkeypatch.chdir(tmp_path)
 
     data = pd.DataFrame([
-        {
-            "job_id": invalid_id,
-            "job_title": "Python Developer",
-            "company": "TechCorp",
-            "location": "Delhi",
-        }
+        make_job(invalid_id),
     ])
 
     with pytest.raises(ValueError, match="Job IDs cannot be empty"):
@@ -302,35 +283,26 @@ def test_load_rejects_invalid_job_ids(
 # -------------------------
 
 def test_pipeline_runs_all_stages(monkeypatch):
-    import src.pipeline as pipeline
-
-    sample_data = pd.DataFrame([
-        {
-            "job_id": "101",
-            "job_title": "Python Developer",
-            "company": "TechCorp",
-            "location": "Delhi",
-        }
-    ])
+    sample_data = pd.DataFrame([make_job("101")])
 
     calls = []
 
     monkeypatch.setattr(
         pipeline,
         "extract_jobs",
-        lambda: calls.append("extract") or sample_data
+        lambda: calls.append("extract") or sample_data,
     )
 
     monkeypatch.setattr(
         pipeline,
         "transform_jobs",
-        lambda df: calls.append("transform") or df
+        lambda df: calls.append("transform") or df,
     )
 
     monkeypatch.setattr(
         pipeline,
         "load_jobs",
-        lambda df: calls.append("load")
+        lambda df: calls.append("load"),
     )
 
     result = pipeline.run_pipeline()
