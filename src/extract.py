@@ -1,4 +1,3 @@
-
 import requests
 import pandas as pd
 from datetime import datetime, timezone
@@ -34,15 +33,43 @@ def extract_jobs():
             response.raise_for_status()
             data = response.json()
 
+            # Validate API response structure.
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    "Invalid API response: expected a JSON object."
+                )
+
             jobs = data.get("jobs", [])
             metadata = data.get("meta", {})
+
+            if not isinstance(jobs, list):
+                raise RuntimeError(
+                    "Invalid API response: jobs must be a list."
+                )
+
+            if not isinstance(metadata, dict):
+                raise RuntimeError(
+                    "Invalid API response: meta must be an object."
+                )
 
             if not jobs:
                 break
 
+            # Process individual job records.
             for job in jobs:
+
+                # Skip malformed records.
+                if not isinstance(job, dict):
+                    continue
+
+                job_id = job.get("id")
+
+                # Skip records without valid IDs.
+                if job_id is None or str(job_id).strip() == "":
+                    continue
+
                 records.append({
-                    "job_id": str(job.get("id", "")),
+                    "job_id": str(job_id).strip(),
                     "job_title": job.get("title", ""),
                     "company": job.get("organization", ""),
                     "location": job.get("location", "Not specified"),
@@ -71,6 +98,7 @@ def extract_jobs():
                     ).isoformat(),
                 })
 
+            # Pagination.
             offset += len(jobs)
 
             if not metadata.get("hasMore", False):
@@ -88,7 +116,7 @@ def extract_jobs():
 
     if not records:
         raise RuntimeError(
-            "The API returned no Indian job listings."
+          "The API returned no Indian job listings (no valid records)."
         )
 
     df = pd.DataFrame(records)

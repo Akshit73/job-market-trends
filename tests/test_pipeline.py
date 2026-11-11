@@ -309,3 +309,84 @@ def test_pipeline_runs_all_stages(monkeypatch):
 
     assert calls == ["extract", "transform", "load"]
     assert len(result) == 1
+
+# -------------------------
+# API VALIDATION TESTS
+# -------------------------
+
+def test_extract_rejects_invalid_json_structure(monkeypatch):
+    class MockResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return ["invalid", "response"]
+
+    monkeypatch.setattr(
+        extract_module.requests,
+        "get",
+        lambda *args, **kwargs: MockResponse(),
+    )
+
+    with pytest.raises(RuntimeError, match="expected a JSON object"):
+        extract_module.extract_jobs()
+
+
+def test_extract_rejects_invalid_jobs_format(monkeypatch):
+    class MockResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "jobs": "not a list",
+                "meta": {"hasMore": False},
+            }
+
+    monkeypatch.setattr(
+        extract_module.requests,
+        "get",
+        lambda *args, **kwargs: MockResponse(),
+    )
+
+    with pytest.raises(RuntimeError, match="jobs must be a list"):
+        extract_module.extract_jobs()
+
+
+def test_extract_skips_malformed_job_records(monkeypatch):
+    valid_job = {
+        "id": 101,
+        "title": "Python Developer",
+        "organization": "TechCorp",
+        "location": "Delhi",
+        "country": "IN",
+        "url": "https://example.com/job/101",
+    }
+
+    class MockResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "jobs": [
+                    None,
+                    {},
+                    {"id": ""},
+                    {"id": "   "},
+                    valid_job,
+                ],
+                "meta": {"hasMore": False},
+            }
+
+    monkeypatch.setattr(
+        extract_module.requests,
+        "get",
+        lambda *args, **kwargs: MockResponse(),
+    )
+
+    result = extract_module.extract_jobs()
+
+    assert len(result) == 1
+    assert result.iloc[0]["job_id"] == "101"
+    assert result.iloc[0]["job_title"] == "Python Developer"
